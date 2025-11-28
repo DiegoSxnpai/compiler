@@ -1,0 +1,6 @@
+fn main() -> int {
+    let message: string = "Hello, Nova!";
+    print(message);
+    print(42);
+    return 0;
+}

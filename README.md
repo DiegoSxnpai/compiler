@@ -30,3 +30,16 @@ Minimal C-inspired language with automatic memory management and stronger string
 - Add arrays/structs, slices, and first-class functions.
 - Flesh out ARM64 backend.
 - Add optimizer pass (constant folding, dead code).
+
+## Assembly-to-high-level translator (NASM, Windows x64)
+- File: `asm_to_lang.asm` — reads x86-64 assembly (subset) and prints a C-like rendition.
+- Supported patterns: labels, `mov`, `add`, `sub`, `cmp`, `jmp`, `je/jne/jl/jg/jle/jge` (register/immediate, no memory indirection). Other lines are ignored.
+- Build (Visual Studio Developer Command Prompt, with NASM):  
+  `nasm -f win64 asm_to_lang.asm -o asm_to_lang.obj`  
+  `link /subsystem:console asm_to_lang.obj msvcrt.lib`
+- Run: `asm_to_lang.exe input.asm`
+- Output examples:  
+  `mov rax, 5` -> `let rax = 5;`  
+  `add rax, 3` -> `rax = rax + 3;`  
+  `cmp rax, rbx` + `je done` -> `if (rax == rbx) goto done;`
+- Notes: uses `fopen/fgets/printf`; requires Windows x64 ABI. Extend by adding new opcode strings and printf formats in `asm_to_lang.asm`.
