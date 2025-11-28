@@ -1,6 +1,13 @@
 ; asm_to_lang_sysv.asm
 ; Linux/WSL x86-64 SysV ABI variant (NASM, links with glibc via gcc -no-pie)
 ; Functionally mirrors asm_to_lang.asm: reads an input .asm, prints C-like translations.
+; Supported patterns (subset):
+;   label
+;   mov/lea reg|[mem], src
+;   add/sub/imul/mul reg|[mem], src
+;   inc/dec/neg/not
+;   push/pop/call/ret
+;   cmp/test + conditional jumps je/jz/jne/jnz/jl/jg/jle/jge/ja/jae/jb/jbe, and jmp
 
 default rel
 
@@ -20,6 +27,8 @@ fmt_store     db "%s = %s;", 10, 0
 fmt_add       db "%s = %s + %s;", 10, 0
 fmt_sub       db "%s = %s - %s;", 10, 0
 fmt_mul       db "%s = %s * %s;", 10, 0
+fmt_neg       db "%s = -%s;", 10, 0
+fmt_notb      db "%s = ~%s;", 10, 0
 fmt_and       db "%s = %s & %s;", 10, 0
 fmt_or        db "%s = %s | %s;", 10, 0
 fmt_xor       db "%s = %s ^ %s;", 10, 0
@@ -38,12 +47,18 @@ fmt_if_gt     db "if (%s > %s) goto %s;", 10, 0
 fmt_if_le     db "if (%s <= %s) goto %s;", 10, 0
 fmt_if_ge     db "if (%s >= %s) goto %s;", 10, 0
 
+str_one      db "1", 0
+
 mode_read db "r", 0
 
 op_mov db "mov", 0
 op_lea db "lea", 0
 op_add db "add", 0
 op_sub db "sub", 0
+op_inc db "inc", 0
+op_dec db "dec", 0
+op_neg db "neg", 0
+op_not db "not", 0
 op_imul db "imul", 0
 op_and db "and", 0
 op_or  db "or", 0
@@ -287,6 +302,60 @@ parse_line:
     lea rdi, [rel fmt_lea]
     lea rsi, [rel arg1buf]
     lea rdx, [rel arg2buf]
+    xor eax, eax
+    call printf
+    jmp .pl_done
+
+.check_inc:
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_inc]
+    call streq
+    cmp eax, 1
+    jne .check_dec
+    lea rdi, [rel fmt_add]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg1buf]
+    lea rcx, [rel str_one]
+    xor eax, eax
+    call printf
+    jmp .pl_done
+
+.check_dec:
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_dec]
+    call streq
+    cmp eax, 1
+    jne .check_neg
+    lea rdi, [rel fmt_sub]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg1buf]
+    lea rcx, [rel str_one]
+    xor eax, eax
+    call printf
+    jmp .pl_done
+
+.check_neg:
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_neg]
+    call streq
+    cmp eax, 1
+    jne .check_not
+    lea rdi, [rel fmt_neg]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg1buf]
+    xor eax, eax
+    call printf
+    jmp .pl_done
+
+.check_not:
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_not]
+    call streq
+    cmp eax, 1
+    jne .check_mov
+    lea rdi, [rel fmt_notb]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg1buf]
     xor eax, eax
     call printf
     jmp .pl_done
@@ -749,8 +818,40 @@ format_mem_inplace:
     je .fm_end
     cmp al, ']'
     je .fm_end
+    cmp al, ' '
+    je .fm_skip
+    cmp al, 9
+    je .fm_skip
+    cmp al, 0x0d
+    je .fm_skip
+    cmp al, 0x0a
+    je .fm_skip
+    cmp al, '+'
+    je .fm_op
+    cmp al, '-'
+    je .fm_op
+    cmp al, '*'
+    je .fm_op
     mov [r9+r10], al
     inc r10
+    inc r8
+    jmp .fm_copy
+.fm_op:
+    cmp r10, 0
+    je .fm_writeop
+    mov bl, [r9+r10-1]
+    cmp bl, ' '
+    je .fm_writeop
+    mov byte [r9+r10], ' '
+    inc r10
+.fm_writeop:
+    mov [r9+r10], al
+    inc r10
+    mov byte [r9+r10], ' '
+    inc r10
+    inc r8
+    jmp .fm_copy
+.fm_skip:
     inc r8
     jmp .fm_copy
 .fm_end:
