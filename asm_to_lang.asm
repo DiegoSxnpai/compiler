@@ -28,6 +28,12 @@ fmt_assign    db "let %s = %s;", 10, 0
 fmt_store     db "%s = %s;", 10, 0
 fmt_add       db "%s = %s + %s;", 10, 0
 fmt_sub       db "%s = %s - %s;", 10, 0
+fmt_mul       db "%s = %s * %s;", 10, 0
+fmt_and       db "%s = %s & %s;", 10, 0
+fmt_or        db "%s = %s | %s;", 10, 0
+fmt_xor       db "%s = %s ^ %s;", 10, 0
+fmt_shl       db "%s = %s << %s;", 10, 0
+fmt_shr       db "%s = %s >> %s;", 10, 0
 fmt_goto      db "goto %s;", 10, 0
 fmt_call      db "call %s();", 10, 0
 fmt_ret       db "return;", 10, 0
@@ -47,6 +53,13 @@ op_mov db "mov", 0
 op_lea db "lea", 0
 op_add db "add", 0
 op_sub db "sub", 0
+op_imul db "imul", 0
+op_and db "and", 0
+op_or  db "or", 0
+op_xor db "xor", 0
+op_shl db "shl", 0
+op_shr db "shr", 0
+op_sar db "sar", 0
 op_cmp db "cmp", 0
 op_test db "test", 0
 op_jmp db "jmp", 0
@@ -324,8 +337,99 @@ parse_line:
     lea rdx, [rel op_sub]
     call streq
     cmp eax, 1
-    jne .check_cmp
+    jne .check_imul
     lea rcx, [rel fmt_sub]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_imul:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_imul]
+    call streq
+    cmp eax, 1
+    jne .check_and
+    lea rcx, [rel fmt_mul]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_and:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_and]
+    call streq
+    cmp eax, 1
+    jne .check_or
+    lea rcx, [rel fmt_and]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_or:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_or]
+    call streq
+    cmp eax, 1
+    jne .check_xor
+    lea rcx, [rel fmt_or]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_xor:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_xor]
+    call streq
+    cmp eax, 1
+    jne .check_shl
+    lea rcx, [rel fmt_xor]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_shl:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_shl]
+    call streq
+    cmp eax, 1
+    jne .check_shr
+    lea rcx, [rel fmt_shl]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_shr:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_shr]
+    call streq
+    cmp eax, 1
+    jne .check_sar
+    lea rcx, [rel fmt_shr]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg1buf]
+    lea r9,  [rel arg2buf]
+    call printf
+    jmp .pl_done
+
+.check_sar:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_sar]
+    call streq
+    cmp eax, 1
+    jne .check_cmp
+    lea rcx, [rel fmt_shr]
     lea rdx, [rel arg1buf]
     lea r8,  [rel arg1buf]
     lea r9,  [rel arg2buf]

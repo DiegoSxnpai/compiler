@@ -35,7 +35,7 @@ Minimal C-inspired language with automatic memory management and stronger string
 - File: `asm_to_lang.asm` — reads x86-64 assembly (subset) and prints a C-like rendition.
 - Supported patterns:
   - Labels.
-  - Moves/arithmetic: `mov`, `lea`, `add`, `sub` (register/immediate or memory tokens like `[rbp-8]`).
+  - Moves/arithmetic/logic: `mov`, `lea`, `add`, `sub`, `imul`, `and`, `or`, `xor`, `shl`, `shr`, `sar` (register/immediate or memory tokens like `[rbp-8]`).
   - Stack/calls: `push`, `pop`, `call`, `ret`.
   - Comparisons/branches: `cmp`, `test`, `jmp`, `je/jz`, `jne/jnz`, `jl/jg/jle/jge`, `ja/jae/jb/jbe`.
   - Other lines are ignored.
