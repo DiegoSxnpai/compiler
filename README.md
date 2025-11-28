@@ -48,3 +48,10 @@ Minimal C-inspired language with automatic memory management and stronger string
   `add rax, 3` -> `rax = rax + 3;`  
   `cmp rax, rbx` + `je done` -> `if (rax == rbx) goto done;`
 - Notes: uses `fopen/fgets/printf`; requires Windows x64 ABI. Extend by adding new opcode strings and printf formats in `asm_to_lang.asm`.
+
+## Linux/WSL SysV variant
+- File: `asm_to_lang_sysv.asm` — same translator for SysV ABI.
+- Build (Linux/WSL, NASM + gcc, non-PIE for simplicity):  
+  `nasm -f elf64 asm_to_lang_sysv.asm -o asm_to_lang_sysv.o`  
+  `gcc -no-pie asm_to_lang_sysv.o -o asm_to_lang_sysv`
+- Run: `./asm_to_lang_sysv input.asm`

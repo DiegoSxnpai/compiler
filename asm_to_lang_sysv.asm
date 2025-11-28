@@ -1,15 +1,6 @@
-; asm_to_lang.asm
-; Minimal translator from a small subset of x86-64 assembly to a C-like high-level form.
-; Target: Windows x64 (Microsoft ABI), NASM syntax. Links against msvcrt for stdio.
-; Supported patterns (subset):
-;   label:                     -> "label:"
-;   mov/lea reg|[mem], src     -> "let dst = src;" or "[mem] = src;"
-;   add/sub reg|[mem], src     -> "dst = dst +/- src;"
-;   push/pop/call/ret          -> rendered as is (call emits "()")
-;   cmp/test a, b              -> remembers operands for following conditional jumps
-;   jmp label                  -> "goto label;"
-;   je/jz/jne/jnz/jl/jg/jle/jge/ja/jae/jb/jbe label -> "if (a <op> b) goto label;"
-; Unhandled lines are ignored.
+; asm_to_lang_sysv.asm
+; Linux/WSL x86-64 SysV ABI variant (NASM, links with glibc via gcc -no-pie)
+; Functionally mirrors asm_to_lang.asm: reads an input .asm, prints C-like translations.
 
 default rel
 
@@ -95,64 +86,63 @@ section .text
 main:
     push rbp
     mov rbp, rsp
-    sub rsp, 48                ; 32 bytes shadow space + 16 bytes locals, keep 16-byte alignment
+    sub rsp, 8                ; align stack to 16 before calls (after push rbp)
 
-    cmp ecx, 2                 ; argc < 2?
+    cmp edi, 2
     jl .usage
 
-    mov rax, rdx               ; argv
-    mov [rbp-16], rax          ; save argv for error paths
-    mov rcx, [rax+8]           ; argv[1] filename
-    lea rdx, [rel mode_read]
+    mov rbx, rsi              ; argv
+    mov rdi, [rbx+8]          ; filename
+    lea rsi, [rel mode_read]
     call fopen
     test rax, rax
     jnz .opened
 
-    ; fopen failed
-    lea rcx, [rel fmt_open_fail]
-    mov rdx, [rbp-16]
-    mov rdx, [rdx+8]
+    lea rdi, [rel fmt_open_fail]
+    mov rsi, [rbx+8]
+    xor eax, eax
     call printf
-    mov ecx, 1
+    mov edi, 1
     call exit
 
 .usage:
-    lea rcx, [rel fmt_usage]
-    xor rdx, rdx
+    lea rdi, [rel fmt_usage]
+    xor esi, esi
+    xor eax, eax
     call printf
-    mov ecx, 1
+    mov edi, 1
     call exit
 
 .opened:
-    mov [rbp-8], rax           ; stash FILE*
+    mov r12, rax              ; FILE*
 
 .read_loop:
-    lea rcx, [rel linebuf]
-    mov edx, 1024
-    mov r8, [rbp-8]
+    lea rdi, [rel linebuf]
+    mov esi, 1024
+    mov rdx, r12
     call fgets
     test rax, rax
     je .done
-    lea rcx, [rel linebuf]
+    lea rdi, [rel linebuf]
     call parse_line
     jmp .read_loop
 
 .done:
-    xor ecx, ecx
+    xor edi, edi
     call exit
 
 ; parse_line(char* line)
-; Clobbers: rax, rcx, rdx, r8-r11, preserves rbx/rsi/rdi.
+; Clobbers: rax, rdi, rsi, rdx, r8-r11; preserves rbx, r12-r15, rbp.
 parse_line:
     push rbp
     mov rbp, rsp
     push rdi
     push rsi
     push rbx
-    sub rsp, 40                ; 32 shadow + 8 for alignment
+    sub rsp, 8                ; keep 16 alignment
 
-    mov rsi, rcx               ; line pointer
-    mov rcx, rsi
+    mov rsi, rdi              ; line pointer
+    mov rdi, rsi
     call skip_ws
     mov rsi, rax
     mov al, [rsi]
@@ -163,11 +153,9 @@ parse_line:
     cmp al, '.'
     je .pl_done
 
-    ; parse op / label
-    lea rdi, [rel opbuf]
-    mov rbx, rsi
+    lea rbx, [rel opbuf]
 .copy_token:
-    mov al, [rbx]
+    mov al, [rsi]
     cmp al, 0
     je .finish_token
     cmp al, ':'
@@ -180,26 +168,25 @@ parse_line:
     je .finish_token
     cmp al, 0x0a
     je .finish_token
-    mov [rdi], al
-    inc rdi
+    mov [rbx], al
     inc rbx
+    inc rsi
     jmp .copy_token
 
 .finish_token:
-    mov byte [rdi], 0
+    mov byte [rbx], 0
     jmp .after_token
 
 .label:
-    mov byte [rdi], 0
-    lea rcx, [rel fmt_label]
-    lea rdx, [rel opbuf]
-    xor r8d, r8d
-    xor r9d, r9d
+    mov byte [rbx], 0
+    lea rdi, [rel fmt_label]
+    lea rsi, [rel opbuf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .after_token:
-    mov rcx, rbx
+    mov rdi, rsi
     call skip_ws
     mov rsi, rax
 
@@ -210,455 +197,468 @@ parse_line:
     test al, al
     je .process_op
 
-    ; arg1
-    mov rcx, rsi
-    lea rdx, [rel arg1buf]
+    mov rdi, rsi
+    lea rsi, [rel arg1buf]
     call parse_operand
     mov rsi, rax
-    mov rcx, rsi
+    mov rdi, rsi
     call skip_ws
     mov rsi, rax
     mov al, [rsi]
     cmp al, ','
     jne .process_op
     inc rsi
-    mov rcx, rsi
+    mov rdi, rsi
     call skip_ws
     mov rsi, rax
-    mov rcx, rsi
-    lea rdx, [rel arg2buf]
+    mov rdi, rsi
+    lea rsi, [rel arg2buf]
     call parse_operand
 
-    ; normalize memory operands
+    ; normalize memory
     lea rax, [rel arg1buf]
     mov dl, [rax]
     cmp dl, '['
     jne .check_arg2_mem
-    mov rcx, rax
+    mov rdi, rax
     call format_mem_inplace
 .check_arg2_mem:
     lea rax, [rel arg2buf]
     mov dl, [rax]
     cmp dl, '['
     jne .process_op
-    mov rcx, rax
+    mov rdi, rax
     call format_mem_inplace
 
 .process_op:
     ; ret
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_ret]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_ret]
     call streq
     cmp eax, 1
     jne .check_call
-    lea rcx, [rel fmt_ret]
-    xor rdx, rdx
-    xor r8d, r8d
-    xor r9d, r9d
+    lea rdi, [rel fmt_ret]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_call:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_call]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_call]
     call streq
     cmp eax, 1
     jne .check_push
-    lea rcx, [rel fmt_call]
-    lea rdx, [rel arg1buf]
-    xor r8d, r8d
-    xor r9d, r9d
+    lea rdi, [rel fmt_call]
+    lea rsi, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_push:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_push]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_push]
     call streq
     cmp eax, 1
     jne .check_pop
-    lea rcx, [rel fmt_push]
-    lea rdx, [rel arg1buf]
-    xor r8d, r8d
-    xor r9d, r9d
+    lea rdi, [rel fmt_push]
+    lea rsi, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_pop:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_pop]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_pop]
     call streq
     cmp eax, 1
     jne .check_lea
-    lea rcx, [rel fmt_pop]
-    lea rdx, [rel arg1buf]
-    xor r8d, r8d
-    xor r9d, r9d
+    lea rdi, [rel fmt_pop]
+    lea rsi, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_lea:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_lea]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_lea]
     call streq
     cmp eax, 1
     jne .check_mov
-    lea rcx, [rel fmt_lea]
-    lea rdx, [rel arg1buf]
-    lea r8,  [rel arg2buf]
-    xor r9d, r9d
+    lea rdi, [rel fmt_lea]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_mov:
-    ; mov
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_mov]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_mov]
     call streq
     cmp eax, 1
     jne .check_add
     lea rax, [rel arg1buf]
     mov dl, [rax]
-    cmp dl, '['
+    cmp dl, '*'
     jne .mov_reg
-    lea rcx, [rel fmt_store]
-    lea rdx, [rel arg1buf]
-    lea r8,  [rel arg2buf]
-    xor r9d, r9d
+    lea rdi, [rel fmt_store]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 .mov_reg:
-    lea rcx, [rel fmt_assign]
-    lea rdx, [rel arg1buf]
-    lea r8,  [rel arg2buf]
-    xor r9d, r9d
+    lea rdi, [rel fmt_assign]
+    lea rsi, [rel arg1buf]
+    lea rdx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_add:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_add]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_add]
     call streq
     cmp eax, 1
     jne .check_sub
-    lea rcx, [rel fmt_add]
+    lea rdi, [rel fmt_add]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_sub:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_sub]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_sub]
     call streq
     cmp eax, 1
     jne .check_imul
-    lea rcx, [rel fmt_sub]
+    lea rdi, [rel fmt_sub]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_imul:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_imul]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_imul]
     call streq
     cmp eax, 1
     jne .check_and
-    lea rcx, [rel fmt_mul]
+    lea rdi, [rel fmt_mul]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_and:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_and]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_and]
     call streq
     cmp eax, 1
     jne .check_or
-    lea rcx, [rel fmt_and]
+    lea rdi, [rel fmt_and]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_or:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_or]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_or]
     call streq
     cmp eax, 1
     jne .check_xor
-    lea rcx, [rel fmt_or]
+    lea rdi, [rel fmt_or]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_xor:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_xor]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_xor]
     call streq
     cmp eax, 1
     jne .check_shl
-    lea rcx, [rel fmt_xor]
+    lea rdi, [rel fmt_xor]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_shl:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_shl]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_shl]
     call streq
     cmp eax, 1
     jne .check_shr
-    lea rcx, [rel fmt_shl]
+    lea rdi, [rel fmt_shl]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_shr:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_shr]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_shr]
     call streq
     cmp eax, 1
     jne .check_sar
-    lea rcx, [rel fmt_shr]
+    lea rdi, [rel fmt_shr]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_sar:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_sar]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_sar]
     call streq
     cmp eax, 1
     jne .check_cmp
-    lea rcx, [rel fmt_shr]
+    lea rdi, [rel fmt_shr]
+    lea rsi, [rel arg1buf]
     lea rdx, [rel arg1buf]
-    lea r8,  [rel arg1buf]
-    lea r9,  [rel arg2buf]
+    lea rcx, [rel arg2buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_cmp:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_cmp]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_cmp]
     call streq
     cmp eax, 1
     jne .check_test
-    lea rcx, [rel cmp_left]
-    lea rdx, [rel arg1buf]
+    lea rdi, [rel cmp_left]
+    lea rsi, [rel arg1buf]
     call copy_str
-    lea rcx, [rel cmp_right]
-    lea rdx, [rel arg2buf]
+    lea rdi, [rel cmp_right]
+    lea rsi, [rel arg2buf]
     call copy_str
     jmp .pl_done
 
 .check_test:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_test]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_test]
     call streq
     cmp eax, 1
     jne .check_jmp
-    lea rcx, [rel cmp_left]
-    lea rdx, [rel arg1buf]
+    lea rdi, [rel cmp_left]
+    lea rsi, [rel arg1buf]
     call copy_str
-    lea rcx, [rel cmp_right]
-    lea rdx, [rel arg2buf]
+    lea rdi, [rel cmp_right]
+    lea rsi, [rel arg2buf]
     call copy_str
     jmp .pl_done
 
 .check_jmp:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jmp]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jmp]
     call streq
     cmp eax, 1
     jne .check_je
-    lea rcx, [rel fmt_goto]
-    lea rdx, [rel arg1buf]
-    xor r8d, r8d
-    xor r9d, r9d
+    lea rdi, [rel fmt_goto]
+    lea rsi, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_je:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_je]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_je]
     call streq
     cmp eax, 1
     jne .check_jz
-    lea rcx, [rel fmt_if_eq]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_eq]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jz:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jz]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jz]
     call streq
     cmp eax, 1
     jne .check_jne
-    lea rcx, [rel fmt_if_eq]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_eq]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jne:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jne]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jne]
     call streq
     cmp eax, 1
     jne .check_jnz
-    lea rcx, [rel fmt_if_ne]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_ne]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jnz:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jnz]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jnz]
     call streq
     cmp eax, 1
     jne .check_jl
-    lea rcx, [rel fmt_if_ne]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_ne]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jl:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jl]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jl]
     call streq
     cmp eax, 1
     jne .check_jg
-    lea rcx, [rel fmt_if_lt]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_lt]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jg:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jg]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jg]
     call streq
     cmp eax, 1
     jne .check_jle
-    lea rcx, [rel fmt_if_gt]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_gt]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jle:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jle]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jle]
     call streq
     cmp eax, 1
     jne .check_jge
-    lea rcx, [rel fmt_if_le]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_le]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jge:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jge]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jge]
     call streq
     cmp eax, 1
     jne .check_ja
-    lea rcx, [rel fmt_if_ge]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_ge]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_ja:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_ja]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_ja]
     call streq
     cmp eax, 1
     jne .check_jae
-    lea rcx, [rel fmt_if_gt]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_gt]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jae:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jae]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jae]
     call streq
     cmp eax, 1
     jne .check_jb
-    lea rcx, [rel fmt_if_ge]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_ge]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jb:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jb]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jb]
     call streq
     cmp eax, 1
     jne .check_jbe
-    lea rcx, [rel fmt_if_lt]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_lt]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
     jmp .pl_done
 
 .check_jbe:
-    lea rcx, [rel opbuf]
-    lea rdx, [rel op_jbe]
+    lea rdi, [rel opbuf]
+    lea rsi, [rel op_jbe]
     call streq
     cmp eax, 1
     jne .pl_done
-    lea rcx, [rel fmt_if_le]
-    lea rdx, [rel cmp_left]
-    lea r8,  [rel cmp_right]
-    lea r9,  [rel arg1buf]
+    lea rdi, [rel fmt_if_le]
+    lea rsi, [rel cmp_left]
+    lea rdx, [rel cmp_right]
+    lea rcx, [rel arg1buf]
+    xor eax, eax
     call printf
 
 .pl_done:
-    add rsp, 40
+    add rsp, 8
     pop rbx
     pop rsi
     pop rdi
     pop rbp
     ret
 
-; skip_ws(char* p) -> returns first non-space pointer in rax
+; skip_ws(char* p) -> rax
 skip_ws:
-    mov rax, rcx
+    mov rax, rdi
 .sw_loop:
     mov dl, [rax]
     cmp dl, ' '
@@ -674,10 +674,10 @@ skip_ws:
     inc rax
     jmp .sw_loop
 
-; parse_operand(char* src, char* dest) -> returns pointer after token in rax
+; parse_operand(char* src, char* dest) -> rax points after token
 parse_operand:
-    mov rax, rcx       ; src
-    mov r8, rdx        ; dest
+    mov rax, rdi
+    mov r8, rsi
 .po_loop:
     mov dl, [rax]
     cmp dl, 0
@@ -702,10 +702,10 @@ parse_operand:
     mov byte [r8], 0
     ret
 
-; streq(const char* a, const char* b) -> eax = 1 if equal else 0
+; streq(a, b) -> eax = 1 if equal else 0
 streq:
-    mov r8, rcx
-    mov r9, rdx
+    mov r8, rdi
+    mov r9, rsi
 .se_loop:
     mov al, [r8]
     mov dl, [r9]
@@ -723,10 +723,9 @@ streq:
     xor eax, eax
     ret
 
-; copy_str(dest, src)
 copy_str:
-    mov r8, rcx
-    mov r9, rdx
+    mov r8, rdi
+    mov r9, rsi
 .cs_loop:
     mov al, [r9]
     mov [r8], al
@@ -738,12 +737,12 @@ copy_str:
 
 ; format_mem_inplace(buf): turns "[rbp-8]" into "*(rbp-8)"
 format_mem_inplace:
-    mov r8, rcx            ; src buf
-    lea r9, [rel tmpbuf]   ; temp dest
-    mov byte [r9], '*'     ; prefix
+    mov r8, rdi
+    lea r9, [rel tmpbuf]
+    mov byte [r9], '*'
     mov byte [r9+1], '('
     mov r10, 2
-    inc r8                 ; skip '['
+    inc r8
 .fm_copy:
     mov al, [r8]
     test al, al
@@ -758,8 +757,7 @@ format_mem_inplace:
     mov byte [r9+r10], ')'
     inc r10
     mov byte [r9+r10], 0
-    ; copy back to original buffer
-    mov r8, rcx
+    mov r8, rdi
     lea r9, [rel tmpbuf]
 .fm_copyback:
     mov al, [r9]
