@@ -33,7 +33,12 @@ Minimal C-inspired language with automatic memory management and stronger string
 
 ## Assembly-to-high-level translator (NASM, Windows x64)
 - File: `asm_to_lang.asm` — reads x86-64 assembly (subset) and prints a C-like rendition.
-- Supported patterns: labels, `mov`, `add`, `sub`, `cmp`, `jmp`, `je/jne/jl/jg/jle/jge` (register/immediate, no memory indirection). Other lines are ignored.
+- Supported patterns:
+  - Labels.
+  - Moves/arithmetic: `mov`, `lea`, `add`, `sub` (register/immediate or memory tokens like `[rbp-8]`).
+  - Stack/calls: `push`, `pop`, `call`, `ret`.
+  - Comparisons/branches: `cmp`, `test`, `jmp`, `je/jz`, `jne/jnz`, `jl/jg/jle/jge`, `ja/jae/jb/jbe`.
+  - Other lines are ignored.
 - Build (Visual Studio Developer Command Prompt, with NASM):  
   `nasm -f win64 asm_to_lang.asm -o asm_to_lang.obj`  
   `link /subsystem:console asm_to_lang.obj msvcrt.lib`

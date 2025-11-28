@@ -2,13 +2,13 @@
 ; Minimal translator from a small subset of x86-64 assembly to a C-like high-level form.
 ; Target: Windows x64 (Microsoft ABI), NASM syntax. Links against msvcrt for stdio.
 ; Supported patterns (subset):
-;   label:                -> "label:"
-;   mov reg, imm/reg      -> "let reg = src;"
-;   add reg, imm/reg      -> "reg = reg + src;"
-;   sub reg, imm/reg      -> "reg = reg - src;"
-;   cmp a, b              -> remembers operands for following conditional jumps
-;   jmp label             -> "goto label;"
-;   je/jne/jl/jg/jle/jge label -> "if (a <op> b) goto label;"
+;   label:                     -> "label:"
+;   mov/lea reg|[mem], src     -> "let dst = src;" or "[mem] = src;"
+;   add/sub reg|[mem], src     -> "dst = dst +/- src;"
+;   push/pop/call/ret          -> rendered as is (call emits "()")
+;   cmp/test a, b              -> remembers operands for following conditional jumps
+;   jmp label                  -> "goto label;"
+;   je/jz/jne/jnz/jl/jg/jle/jge/ja/jae/jb/jbe label -> "if (a <op> b) goto label;"
 ; Unhandled lines are ignored.
 
 default rel
@@ -25,9 +25,15 @@ fmt_usage     db "Usage: asm_to_lang <input.asm>", 10, 0
 fmt_open_fail db "Failed to open %s", 10, 0
 fmt_label     db "%s:", 10, 0
 fmt_assign    db "let %s = %s;", 10, 0
+fmt_store     db "%s = %s;", 10, 0
 fmt_add       db "%s = %s + %s;", 10, 0
 fmt_sub       db "%s = %s - %s;", 10, 0
 fmt_goto      db "goto %s;", 10, 0
+fmt_call      db "call %s();", 10, 0
+fmt_ret       db "return;", 10, 0
+fmt_push      db "push %s;", 10, 0
+fmt_pop       db "pop %s;", 10, 0
+fmt_lea       db "let %s = &%s;", 10, 0
 fmt_if_eq     db "if (%s == %s) goto %s;", 10, 0
 fmt_if_ne     db "if (%s != %s) goto %s;", 10, 0
 fmt_if_lt     db "if (%s < %s) goto %s;", 10, 0
@@ -38,16 +44,28 @@ fmt_if_ge     db "if (%s >= %s) goto %s;", 10, 0
 mode_read db "r", 0
 
 op_mov db "mov", 0
+op_lea db "lea", 0
 op_add db "add", 0
 op_sub db "sub", 0
 op_cmp db "cmp", 0
+op_test db "test", 0
 op_jmp db "jmp", 0
 op_je  db "je", 0
+op_jz  db "jz", 0
 op_jne db "jne", 0
+op_jnz db "jnz", 0
 op_jl  db "jl", 0
 op_jg  db "jg", 0
 op_jle db "jle", 0
 op_jge db "jge", 0
+op_ja  db "ja", 0
+op_jae db "jae", 0
+op_jb  db "jb", 0
+op_jbe db "jbe", 0
+op_call db "call", 0
+op_ret  db "ret", 0
+op_push db "push", 0
+op_pop  db "pop", 0
 
 section .bss
 linebuf   resb 1024
@@ -198,12 +216,89 @@ parse_line:
     call parse_operand
 
 .process_op:
+    ; ret
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_ret]
+    call streq
+    cmp eax, 1
+    jne .check_call
+    lea rcx, [rel fmt_ret]
+    xor rdx, rdx
+    xor r8d, r8d
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+
+.check_call:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_call]
+    call streq
+    cmp eax, 1
+    jne .check_push
+    lea rcx, [rel fmt_call]
+    lea rdx, [rel arg1buf]
+    xor r8d, r8d
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+
+.check_push:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_push]
+    call streq
+    cmp eax, 1
+    jne .check_pop
+    lea rcx, [rel fmt_push]
+    lea rdx, [rel arg1buf]
+    xor r8d, r8d
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+
+.check_pop:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_pop]
+    call streq
+    cmp eax, 1
+    jne .check_lea
+    lea rcx, [rel fmt_pop]
+    lea rdx, [rel arg1buf]
+    xor r8d, r8d
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+
+.check_lea:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_lea]
+    call streq
+    cmp eax, 1
+    jne .check_mov
+    lea rcx, [rel fmt_lea]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg2buf]
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+
+.check_mov:
     ; mov
     lea rcx, [rel opbuf]
     lea rdx, [rel op_mov]
     call streq
     cmp eax, 1
     jne .check_add
+    lea rax, [rel arg1buf]
+    mov dl, [rax]
+    cmp dl, '['
+    jne .mov_reg
+    lea rcx, [rel fmt_store]
+    lea rdx, [rel arg1buf]
+    lea r8,  [rel arg2buf]
+    xor r9d, r9d
+    call printf
+    jmp .pl_done
+.mov_reg:
     lea rcx, [rel fmt_assign]
     lea rdx, [rel arg1buf]
     lea r8,  [rel arg2buf]
@@ -242,6 +337,20 @@ parse_line:
     lea rdx, [rel op_cmp]
     call streq
     cmp eax, 1
+    jne .check_test
+    lea rcx, [rel cmp_left]
+    lea rdx, [rel arg1buf]
+    call copy_str
+    lea rcx, [rel cmp_right]
+    lea rdx, [rel arg2buf]
+    call copy_str
+    jmp .pl_done
+
+.check_test:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_test]
+    call streq
+    cmp eax, 1
     jne .check_jmp
     lea rcx, [rel cmp_left]
     lea rdx, [rel arg1buf]
@@ -269,6 +378,19 @@ parse_line:
     lea rdx, [rel op_je]
     call streq
     cmp eax, 1
+    jne .check_jz
+    lea rcx, [rel fmt_if_eq]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_jz:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_jz]
+    call streq
+    cmp eax, 1
     jne .check_jne
     lea rcx, [rel fmt_if_eq]
     lea rdx, [rel cmp_left]
@@ -280,6 +402,19 @@ parse_line:
 .check_jne:
     lea rcx, [rel opbuf]
     lea rdx, [rel op_jne]
+    call streq
+    cmp eax, 1
+    jne .check_jnz
+    lea rcx, [rel fmt_if_ne]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_jnz:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_jnz]
     call streq
     cmp eax, 1
     jne .check_jl
@@ -334,8 +469,60 @@ parse_line:
     lea rdx, [rel op_jge]
     call streq
     cmp eax, 1
-    jne .pl_done
+    jne .check_ja
     lea rcx, [rel fmt_if_ge]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_ja:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_ja]
+    call streq
+    cmp eax, 1
+    jne .check_jae
+    lea rcx, [rel fmt_if_gt]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_jae:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_jae]
+    call streq
+    cmp eax, 1
+    jne .check_jb
+    lea rcx, [rel fmt_if_ge]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_jb:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_jb]
+    call streq
+    cmp eax, 1
+    jne .check_jbe
+    lea rcx, [rel fmt_if_lt]
+    lea rdx, [rel cmp_left]
+    lea r8,  [rel cmp_right]
+    lea r9,  [rel arg1buf]
+    call printf
+    jmp .pl_done
+
+.check_jbe:
+    lea rcx, [rel opbuf]
+    lea rdx, [rel op_jbe]
+    call streq
+    cmp eax, 1
+    jne .pl_done
+    lea rcx, [rel fmt_if_le]
     lea rdx, [rel cmp_left]
     lea r8,  [rel cmp_right]
     lea r9,  [rel arg1buf]
